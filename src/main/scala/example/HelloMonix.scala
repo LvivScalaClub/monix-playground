@@ -31,8 +31,6 @@ import scala.concurrent.duration.Duration
   * 15	spi	boolean	Whether flight status indicates special purpose indicator.
   * 16	position_source	int	Origin of this state’s position: 0 = ADS-B, 1 = ASTERIX, 2 = MLAT
   */
-
-
 case class OpenSkyState(icao24: String,
                         callsign: Option[String],
                         originCountry: String,
@@ -45,11 +43,14 @@ case class OpenSkyState(icao24: String,
                         velocity: Option[Double],
                         trueTrack: Option[Double],
                         verticalRate: Option[Double],
-
-                )
+                        sensors: Seq[Int],
+                        geoAltitude: Option[Double],
+                        squawk: Option[String],
+                        spi: Boolean,
+                        positionSource: Int)
 
 object HelloMonix extends TaskApp {
-  val apiUrl = "https://public-api.adsbexchange.com/VirtualRadar/AircraftList.json"
+  val apiUrl = "https://opensky-network.org/api/states/all"
   /** App's main entry point. */
   def run(args: List[String]): Task[ExitCode] =
     args.headOption match {
@@ -66,7 +67,7 @@ object HelloMonix extends TaskApp {
     implicit val sttpBackend = AsyncHttpClientMonixBackend()
 
     sttp
-      .get(uri"https://public-api.adsbexchange.com/VirtualRadar/AircraftList.json")
+      .get(uri"$apiUrl")
       .response(asStream[Observable[ByteBuffer]])
       .readTimeout(Duration.Inf)
       .send()
