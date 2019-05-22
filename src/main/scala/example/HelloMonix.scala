@@ -4,10 +4,22 @@ import java.nio.ByteBuffer
 
 import cats.effect._
 import cats.implicits._
+import io.circe.{Json, ParsingFailure}
+import io.circe.jawn.CirceSupportParser
 import monix.eval._
+import monix.execution.Ack
+import monix.execution.Ack.{Continue, Stop}
 import monix.reactive.Observable
+import monix.reactive.observers.Subscriber
+import org.jsfr.json.{JsonPathListener, JsonSurferJackson, ParsingContext}
+import org.jsfr.json.compiler.JsonPathCompiler
+import org.jsfr.json.exception.JsonSurfingException
+import org.typelevel.jawn.{AsyncParser, ParseException}
 
+import scala.collection.immutable.Queue
+import scala.concurrent.Future
 import scala.concurrent.duration.Duration
+import scala.util.control.NonFatal
 
 /**
   * The states property is a two-dimensional array. Each row represents a state vector and contains the following fields:
@@ -51,6 +63,13 @@ case class OpenSkyState(icao24: String,
 
 object HelloMonix extends TaskApp {
   val apiUrl = "https://opensky-network.org/api/states/all"
+
+  def surferParse() = {
+    val surfer = JsonSurferJackson.INSTANCE
+
+
+  }
+
   /** App's main entry point. */
   def run(args: List[String]): Task[ExitCode] =
     args.headOption match {
@@ -66,11 +85,67 @@ object HelloMonix extends TaskApp {
 
     implicit val sttpBackend = AsyncHttpClientMonixBackend()
 
-    sttp
+    val A = sttp
       .get(uri"$apiUrl")
       .response(asStream[Observable[ByteBuffer]])
+      .mapResponse(o => o.map(_.array()))
       .readTimeout(Duration.Inf)
       .send()
+      //.flatMap(_.unsafeBody.map(_.array()).liftByOperator(byteArrayParser))
+    A
   }
 }
+
+private abstract class ParsingOperator(path: String) extends Observable.Operator[Array[Byte], Array[Byte]] {
+  private val compiledPath = JsonPathCompiler.compile(path)
+  private var buffer = Queue.empty[Array[Byte]]
+
+  private val surfer = JsonSurferJackson.INSTANCE
+  private val config = surfer.configBuilder
+    .bind(compiledPath, new JsonPathListener {
+      override def onValue(value: Any, context: ParsingContext): Unit =
+        buffer = buffer.enqueue(value.toString.getBytes("UTF8"))
+    })
+    .build
+
+  private val parser = surfer.createNonBlockingParser(config)
+
+  def apply(out: Subscriber[Array[Byte]]): Subscriber[Array[Byte]] = {
+    new Subscriber[Array[Byte]] {
+      implicit val scheduler = out.scheduler
+      private[this] var isDone = false
+
+      def onNext(elem: Array[Byte]): Future[Ack] = {
+        try {
+          parser.feed(elem, 0, elem.length)
+
+          if (buffer.nonEmpty) {
+            out.onNextAll(buffer)
+            buffer = Queue.empty[Array[Byte]]
+          } else {
+            Continue
+          }
+        } catch {
+          case e: JsonSurfingException =>
+            onError(ParsingFailure(e.getMessage, e))
+            Stop
+        }
+      }
+
+      def onError(ex: Throwable): Unit =
+        if (!isDone) {
+          isDone = true
+          out.onError(ex)
+        }
+
+      def onComplete(): Unit =
+        if (!isDone) {
+          isDone = true
+          out.onComplete()
+          parser.endOfInput()
+        }
+    }
+  }
+}
+
 
