@@ -4,7 +4,7 @@ import java.nio.ByteBuffer
 
 import cats.effect._
 import cats.implicits._
-import io.circe.{Json, ParsingFailure}
+import io.circe.{Decoder, DecodingFailure, Json, ParsingFailure}
 import io.circe.jawn.CirceSupportParser
 import monix.eval._
 import monix.execution.Ack
@@ -64,10 +64,17 @@ case class OpenSkyState(icao24: String,
 object HelloMonix extends TaskApp {
   val apiUrl = "https://opensky-network.org/api/states/all"
 
-  def surferParse() = {
-    val surfer = JsonSurferJackson.INSTANCE
+  implicit val decodeInstant: Decoder[OpenSkyState] = Decoder.instance { c =>
+    c.focus.flatMap(_.asArray) match {
+      case Some(arr) =>
+        for {
+          icao24 <- arr.head.as[String]
+        } yield OpenSkyState(
+          icao24 = icao24
+        )
 
-
+      case None => Left(DecodingFailure("OpenSkyState", c.history))
+    }
   }
 
   /** App's main entry point. */
