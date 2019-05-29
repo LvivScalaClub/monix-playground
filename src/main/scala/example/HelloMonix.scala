@@ -72,31 +72,37 @@ object HelloMonix extends TaskApp {
 
   /** App's main entry point. */
   def run(args: List[String]): Task[ExitCode] =
-    args.headOption match {
+    /*args.headOption match {
       case Some(name) =>
         Task(println(s"Hello, $name!")).as(ExitCode.Success)
       case None =>
         Task(System.err.println("Usage: Hello name")).as(ExitCode(2))
-    }
+    }*/
+
+  fetchAircrafts().map(_ => ExitCode.Success)
 
   def fetchAircrafts(): Task[_] = {
     import com.softwaremill.sttp._
     import com.softwaremill.sttp.asynchttpclient.monix._
 
     implicit val sttpBackend = AsyncHttpClientMonixBackend()
+    import monix.execution.Scheduler.Implicits.global
 
-    val A = sttp
+    sttp
       .get(uri"$apiUrl")
       .response(asStream[Observable[ByteBuffer]])
-      .mapResponse(o => o.map(_.array()))
+      .mapResponse(o => o.map(_.array()).liftByOperator(new ParsingOperator("$.states[*]")))
       .readTimeout(Duration.Inf)
       .send()
-      //.flatMap(_.unsafeBody.map(_.array()).liftByOperator(byteArrayParser))
-    A
+      .map({ r =>
+        r.unsafeBody.foreach({ b =>
+          println(new String(b))
+        })
+      })
   }
 }
 
-private abstract class ParsingOperator(path: String) extends Observable.Operator[Array[Byte], Array[Byte]] {
+private class ParsingOperator(path: String) extends Observable.Operator[Array[Byte], Array[Byte]] {
   private val compiledPath = JsonPathCompiler.compile(path)
   private var buffer = Queue.empty[Array[Byte]]
 
@@ -122,9 +128,8 @@ private abstract class ParsingOperator(path: String) extends Observable.Operator
           if (buffer.nonEmpty) {
             out.onNextAll(buffer)
             buffer = Queue.empty[Array[Byte]]
-          } else {
-            Continue
           }
+          Continue
         } catch {
           case e: JsonSurfingException =>
             onError(ParsingFailure(e.getMessage, e))
